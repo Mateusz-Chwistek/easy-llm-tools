@@ -1,3 +1,4 @@
+import re
 import json
 
 import dns.flags
@@ -50,6 +51,50 @@ USE_DNSSEC: Final[bool] = False
 # -----------------------------------------------------------------------------
 # Internal helpers
 # -----------------------------------------------------------------------------
+
+_QNAME_ALLOWED_RE = re.compile(r"^[A-Za-z0-9.-]+\.?$")
+
+
+def _validate_qname(qname: str) -> Optional[str]:
+    """
+    Validate a DNS query name (qname) using common hostname/FQDN rules.
+
+    Rules enforced:
+    - non-empty string after stripping
+    - total length <= 255 characters
+    - allowed characters: A-Z, a-z, 0-9, '-', '.', optional trailing '.'
+    - no empty labels (no '..')
+    - each label length: 1..63
+    - labels must not start or end with '-'
+
+    Args:
+        qname: Domain name to validate (already stripped).
+
+    Returns:
+        None if valid, otherwise an error message string.
+    """
+    if not qname:
+        return "Qname must be a non-empty string"
+
+    if len(qname) > 255:
+        return "Qname must be shorter than 256 characters"
+
+    if not _QNAME_ALLOWED_RE.fullmatch(qname):
+        return "Qname contains illegal characters (allowed: A-Z, 0-9, '-', '.')"
+
+    qname_normalized = qname[:-1] if qname.endswith(".") else qname
+
+    if ".." in qname_normalized:
+        return "Qname contains empty label ('..' is not allowed)"
+
+    labels = qname_normalized.split(".")
+    for label in labels:
+        if not (1 <= len(label) <= 63):
+            return "Each DNS label must be 1..63 characters long"
+        if label.startswith("-") or label.endswith("-"):
+            return "DNS labels must not start or end with '-'"
+
+    return None
 
 def _build_response(
     *,
@@ -506,12 +551,13 @@ def tool_run(qname: str, qtype: str) -> str:
         qname = qname.strip()
         qtype = qtype.strip().upper()
 
-        if not qname:
+        qname_error = _validate_qname(qname)
+        if qname_error is not None:
             return _build_response(
                 qname=qname,
                 qtype=qtype,
                 success=False,
-                error="Qname must be a non-empty string",
+                error=qname_error,
                 response=None
             )
 
@@ -608,3 +654,404 @@ TOOL_DEFINITION = json.dumps(
     },
     ensure_ascii=False
 )
+
+# -----------------------------------------------------------------------------
+# Tests (paste at the end of this file)
+# -----------------------------------------------------------------------------
+
+import os
+import sys
+try:
+    import pytest
+except ImportError:  # allows importing this module without pytest installed
+    pytest = None  # type: ignore[assignment]
+
+
+if pytest is not None:
+    # Set DNS_TEST_SHOW=0 to disable prints (default: show).
+    _SHOW_CASES = os.getenv("DNS_TEST_SHOW", "1").strip() not in ("0", "false", "False", "no", "NO")
+
+    def _test_parse_json(result: str) -> dict[str, Any]:
+        assert isinstance(result, str), "tool_run() must return a JSON string"
+        payload = json.loads(result)
+        assert isinstance(payload, dict), "JSON root must be an object"
+
+        for key in ["qname", "qtype", "dns_server", "transportMethod", "dnssec", "success", "error", "result"]:
+            assert key in payload, f"Missing key: {key}"
+
+        assert isinstance(payload["result"], list), "result must be a list"
+        assert isinstance(payload["success"], bool), "success must be bool"
+        assert isinstance(payload["error"], str), "error must be string"
+        assert payload["dnssec"] in ("yes", "no"), "dnssec must be 'yes' or 'no'"
+
+        return payload
+
+    def _pretty_print_case(title: str, qname: Any, qtype: Any, payload: dict[str, Any]) -> None:
+        if not _SHOW_CASES:
+            return
+        line = "=" * 96
+        print("\n" + line)
+        print(f"CASE: {title}")
+        print(f"QUESTION: qname={qname!r}, qtype={qtype!r}")
+        print("ANSWER:")
+        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        print(line)
+
+    def _call_tool_run(title: str, qname: Any, qtype: Any) -> dict[str, Any]:
+        result = tool_run(qname, qtype)
+        payload = _test_parse_json(result)
+        _pretty_print_case(title, qname, qtype, payload)
+        return payload
+
+    def _test_make_dns_response_with_answer(
+        query: dns.message.Message,
+        qname: str,
+        rtype: str,
+        answers: list[str],
+        *,
+        ad: bool
+    ) -> dns.message.Message:
+        resp = dns.message.make_response(query)
+        rrset = dns.rrset.from_text(qname, 60, "IN", rtype, *answers)
+        resp.answer.append(rrset)
+        if ad:
+            resp.flags |= dns.flags.AD
+        return resp
+
+    @pytest.fixture()
+    def _this_module():
+        # Reference to this very module (the file you're pasting into)
+        return sys.modules[__name__]
+
+    @pytest.fixture(autouse=True)
+    def forbid_real_network_calls(monkeypatch: pytest.MonkeyPatch):
+        # Fail fast if a test forgets to mock a DNS transport call.
+        def _nope(*args, **kwargs):
+            raise AssertionError("Unexpected network call (mock missing)")
+
+        monkeypatch.setattr(dns.query, "udp_with_fallback", _nope, raising=True)
+        monkeypatch.setattr(dns.query, "https", _nope, raising=True)
+        monkeypatch.setattr(dns.query, "tls", _nope, raising=True)
+        monkeypatch.setattr(dns.query, "quic", _nope, raising=True)
+
+    # -------------------------------------------------------------------------
+    # Input validation tests
+    # -------------------------------------------------------------------------
+
+    def test_qname_must_be_string():
+        payload = _call_tool_run("qname must be string", None, "A")  # type: ignore[arg-type]
+        assert payload["success"] is False
+        assert payload["error"] == "Qname must be a non-empty string"
+        assert payload["qname"] == "Unknown"
+
+    def test_qtype_must_be_string():
+        payload = _call_tool_run("qtype must be string", "example.com", None)  # type: ignore[arg-type]
+        assert payload["success"] is False
+        assert payload["error"] == "Qtype must be a non-empty string"
+        assert payload["qname"] == "example.com"
+
+    def test_qname_cannot_be_empty_after_strip():
+        payload = _call_tool_run("qname empty after strip", "   ", "A")
+        assert payload["success"] is False
+        assert payload["error"] == "Qname must be a non-empty string"
+        assert payload["qname"] == ""
+
+    def test_qtype_cannot_be_empty_after_strip():
+        payload = _call_tool_run("qtype empty after strip", "example.com", "   ")
+        assert payload["success"] is False
+        assert payload["error"] == "Qtype must be a non-empty string"
+        assert payload["qtype"] == ""
+
+    def test_qtype_must_be_allowed_and_make_query_not_called(monkeypatch: pytest.MonkeyPatch):
+        def _boom(*args, **kwargs):
+            raise AssertionError("make_query() should not be called for invalid qtype")
+
+        monkeypatch.setattr(dns.message, "make_query", _boom, raising=True)
+
+        payload = _call_tool_run("qtype invalid (make_query must not be called)", "example.com", "BADTYPE")
+        assert payload["success"] is False
+        assert payload["qtype"] == "BADTYPE"
+        assert payload["error"].startswith("Incorrect qtype BADTYPE. Qtype must be one of ")
+
+    def test_qtype_is_case_insensitive_and_stripped_plain_success(_this_module, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(_this_module, "TRANSPORT_METHOD", "plain", raising=False)
+        monkeypatch.setattr(_this_module, "DNS_SERVERS", ["1.1.1.1"], raising=False)
+        monkeypatch.setattr(_this_module, "USE_DNSSEC", False, raising=False)
+
+        def udp_with_fallback(query, server_ip, timeout, port):
+            resp = _test_make_dns_response_with_answer(query, "example.com", "A", ["93.184.216.34"], ad=False)
+            return resp, False
+
+        monkeypatch.setattr(dns.query, "udp_with_fallback", udp_with_fallback, raising=True)
+
+        payload = _call_tool_run("qtype normalized + plain success", "  example.com  ", "  a  ")
+        assert payload["success"] is True
+        assert payload["qname"] == "example.com"
+        assert payload["qtype"] == "A"
+        assert payload["transportMethod"] == "plain"
+        assert payload["dns_server"] == "1.1.1.1"
+        assert payload["result"] == ["93.184.216.34"]
+
+    # -------------------------------------------------------------------------
+    # Plain transport tests
+    # -------------------------------------------------------------------------
+
+    def test_plain_success_sets_dnssec_yes_if_ad_flag(_this_module, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(_this_module, "TRANSPORT_METHOD", "plain", raising=False)
+        monkeypatch.setattr(_this_module, "DNS_SERVERS", ["8.8.8.8"], raising=False)
+
+        def udp_with_fallback(query, server_ip, timeout, port):
+            resp = _test_make_dns_response_with_answer(query, "example.com", "A", ["1.2.3.4"], ad=True)
+            return resp, False
+
+        monkeypatch.setattr(dns.query, "udp_with_fallback", udp_with_fallback, raising=True)
+
+        payload = _call_tool_run("plain: AD flag -> dnssec=yes", "example.com", "A")
+        assert payload["success"] is True
+        assert payload["dnssec"] == "yes"
+        assert payload["result"] == ["1.2.3.4"]
+
+    def test_plain_first_server_timeout_second_server_success_accumulates_error(_this_module, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(_this_module, "TRANSPORT_METHOD", "plain", raising=False)
+        monkeypatch.setattr(_this_module, "DNS_SERVERS", ["1.1.1.1", "8.8.8.8"], raising=False)
+
+        calls = {"count": 0}
+
+        def udp_with_fallback(query, server_ip, timeout, port):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise dns.exception.Timeout()
+            resp = _test_make_dns_response_with_answer(query, "example.com", "A", ["5.6.7.8"], ad=False)
+            return resp, False
+
+        monkeypatch.setattr(dns.query, "udp_with_fallback", udp_with_fallback, raising=True)
+
+        payload = _call_tool_run("plain: first timeout, second success", "example.com", "A")
+        assert payload["success"] is True
+        assert payload["dns_server"] == "8.8.8.8"
+        assert "Timeout reached" in payload["error"]
+        assert payload["result"] == ["5.6.7.8"]
+
+    def test_plain_rcode_error_then_success_includes_rcode_message(_this_module, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(_this_module, "TRANSPORT_METHOD", "plain", raising=False)
+        monkeypatch.setattr(_this_module, "DNS_SERVERS", ["9.9.9.9", "8.8.4.4"], raising=False)
+
+        calls = {"count": 0}
+
+        def udp_with_fallback(query, server_ip, timeout, port):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                resp = dns.message.make_response(query)
+                resp.set_rcode(dns.rcode.NXDOMAIN)
+                return resp, False
+            resp = _test_make_dns_response_with_answer(query, "example.com", "A", ["10.0.0.1"], ad=False)
+            return resp, False
+
+        monkeypatch.setattr(dns.query, "udp_with_fallback", udp_with_fallback, raising=True)
+
+        payload = _call_tool_run("plain: rcode fail then success", "example.com", "A")
+        assert payload["success"] is True
+        assert payload["dns_server"] == "8.8.4.4"
+        assert "failed with error code: NXDOMAIN" in payload["error"]
+        assert payload["result"] == ["10.0.0.1"]
+
+    def test_plain_all_fail_returns_success_false_and_errors(_this_module, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(_this_module, "TRANSPORT_METHOD", "plain", raising=False)
+        monkeypatch.setattr(_this_module, "DNS_SERVERS", ["1.1.1.1", "8.8.8.8"], raising=False)
+
+        def udp_with_fallback(query, server_ip, timeout, port):
+            raise dns.exception.Timeout()
+
+        monkeypatch.setattr(dns.query, "udp_with_fallback", udp_with_fallback, raising=True)
+
+        payload = _call_tool_run("plain: all servers timeout -> fail", "example.com", "A")
+        assert payload["success"] is False
+        assert payload["transportMethod"] == "plain"
+        assert payload["result"] == []
+        assert "Timeout reached" in payload["error"]
+
+    # -------------------------------------------------------------------------
+    # DoH tests (with/without fallback)
+    # -------------------------------------------------------------------------
+
+    def test_doh_all_bootstraps_fail_returns_specific_error_without_bootstrap_details(_this_module, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(_this_module, "TRANSPORT_METHOD", "doh", raising=False)
+        monkeypatch.setattr(_this_module, "ALLOW_FALLBACK_TO_PLAIN", False, raising=False)
+        monkeypatch.setattr(_this_module, "DNS_SERVERS", ["1.1.1.1", "8.8.8.8"], raising=False)
+        monkeypatch.setattr(_this_module, "ENDPOINT_URL", "https://cloudflare-dns.com/dns-query", raising=False)
+
+        def https_call(query, url, timeout, bootstrap_address):
+            raise RuntimeError("bootstrap exploded")
+
+        monkeypatch.setattr(dns.query, "https", https_call, raising=True)
+
+        payload = _call_tool_run("doh: all bootstraps fail (no fallback)", "example.com", "A")
+        assert payload["success"] is False
+        assert payload["transportMethod"] == "doh"
+        assert payload["dns_server"] == "https://cloudflare-dns.com/dns-query"
+        assert payload["error"] == "Failed to resolve DNS server for DoH query."
+        assert "Bootstrap" not in payload["error"]
+
+    def test_doh_rcode_error_without_fallback(_this_module, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(_this_module, "TRANSPORT_METHOD", "doh", raising=False)
+        monkeypatch.setattr(_this_module, "ALLOW_FALLBACK_TO_PLAIN", False, raising=False)
+        monkeypatch.setattr(_this_module, "DNS_SERVERS", ["1.1.1.1"], raising=False)
+        monkeypatch.setattr(_this_module, "ENDPOINT_URL", "https://resolver.test/dns-query", raising=False)
+
+        def https_call(query, url, timeout, bootstrap_address):
+            resp = dns.message.make_response(query)
+            resp.set_rcode(dns.rcode.SERVFAIL)
+            return resp
+
+        monkeypatch.setattr(dns.query, "https", https_call, raising=True)
+
+        payload = _call_tool_run("doh: rcode error (no fallback)", "example.com", "A")
+        assert payload["success"] is False
+        assert payload["transportMethod"] == "doh"
+        assert payload["dns_server"] == "https://resolver.test/dns-query"
+        assert "failed with error code: SERVFAIL" in payload["error"]
+
+    def test_doh_timeout_with_fallback_to_plain_success_prefixes_errors(_this_module, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(_this_module, "TRANSPORT_METHOD", "doh", raising=False)
+        monkeypatch.setattr(_this_module, "ALLOW_FALLBACK_TO_PLAIN", True, raising=False)
+        monkeypatch.setattr(_this_module, "DNS_SERVERS", ["1.1.1.1"], raising=False)
+        monkeypatch.setattr(_this_module, "ENDPOINT_URL", "https://resolver.test/dns-query", raising=False)
+
+        def https_call(query, url, timeout, bootstrap_address):
+            # In current implementation, this timeout is caught inside the bootstrap loop
+            # and ends up producing: "Failed to resolve DNS server for DoH query."
+            raise dns.exception.Timeout()
+
+        def udp_with_fallback(query, server_ip, timeout, port):
+            resp = _test_make_dns_response_with_answer(query, "example.com", "A", ["203.0.113.10"], ad=False)
+            return resp, False
+
+        monkeypatch.setattr(dns.query, "https", https_call, raising=True)
+        monkeypatch.setattr(dns.query, "udp_with_fallback", udp_with_fallback, raising=True)
+
+        payload = _call_tool_run("doh: timeout -> fallback to plain success", "example.com", "A")
+        assert payload["transportMethod"] == "plain"
+        assert payload["success"] is True
+        assert payload["result"] == ["203.0.113.10"]
+        assert payload["error"] == "Failed to resolve DNS server for DoH query."
+
+    # -------------------------------------------------------------------------
+    # DoT tests
+    # -------------------------------------------------------------------------
+
+    def test_dot_no_dns_servers_no_fallback_returns_failure(_this_module, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(_this_module, "TRANSPORT_METHOD", "dot", raising=False)
+        monkeypatch.setattr(_this_module, "ALLOW_FALLBACK_TO_PLAIN", False, raising=False)
+        monkeypatch.setattr(_this_module, "DNS_SERVERS", [], raising=False)
+
+        payload = _call_tool_run("dot: no servers (no fallback)", "example.com", "A")
+        assert payload["success"] is False
+        assert payload["transportMethod"] == "dot"
+        assert payload["dns_server"] == ""
+        assert payload["error"] == "No DNS servers configured"
+
+    def test_dot_no_dns_servers_with_fallback_attempts_plain_and_prefixes_error(_this_module, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(_this_module, "TRANSPORT_METHOD", "dot", raising=False)
+        monkeypatch.setattr(_this_module, "ALLOW_FALLBACK_TO_PLAIN", True, raising=False)
+        monkeypatch.setattr(_this_module, "DNS_SERVERS", [], raising=False)
+
+        payload = _call_tool_run("dot: no servers -> fallback to plain (still fail)", "example.com", "A")
+        assert payload["transportMethod"] == "plain"
+        assert payload["success"] is False
+        assert payload["error"] == "No DNS servers configured"
+
+    def test_dot_success_sets_dnssec_yes_if_ad_flag(_this_module, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(_this_module, "TRANSPORT_METHOD", "dot", raising=False)
+        monkeypatch.setattr(_this_module, "ALLOW_FALLBACK_TO_PLAIN", False, raising=False)
+        monkeypatch.setattr(_this_module, "DNS_SERVERS", ["1.1.1.1"], raising=False)
+        monkeypatch.setattr(_this_module, "DOT_SNI", "cloudflare-dns.com", raising=False)
+
+        def tls_call(query, server_ip, timeout, port, server_hostname):
+            resp = _test_make_dns_response_with_answer(query, "example.com", "A", ["192.0.2.55"], ad=True)
+            return resp
+
+        monkeypatch.setattr(dns.query, "tls", tls_call, raising=True)
+
+        payload = _call_tool_run("dot: success + AD flag", "example.com", "A")
+        assert payload["success"] is True
+        assert payload["transportMethod"] == "dot"
+        assert payload["dns_server"] == "1.1.1.1"
+        assert payload["dnssec"] == "yes"
+        assert payload["result"] == ["192.0.2.55"]
+
+    # -------------------------------------------------------------------------
+    # DoQ tests
+    # -------------------------------------------------------------------------
+
+    def test_doq_success(_this_module, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(_this_module, "TRANSPORT_METHOD", "doq", raising=False)
+        monkeypatch.setattr(_this_module, "ALLOW_FALLBACK_TO_PLAIN", False, raising=False)
+        monkeypatch.setattr(_this_module, "DNS_SERVERS", ["1.1.1.1"], raising=False)
+        monkeypatch.setattr(_this_module, "DOQ_SNI", "cloudflare-dns.com", raising=False)
+
+        def quic_call(query, server_ip, timeout, port, hostname):
+            resp = _test_make_dns_response_with_answer(query, "example.com", "AAAA", ["2001:db8::1"], ad=False)
+            return resp
+
+        monkeypatch.setattr(dns.query, "quic", quic_call, raising=True)
+
+        payload = _call_tool_run("doq: success", "example.com", "AAAA")
+        assert payload["success"] is True
+        assert payload["transportMethod"] == "doq"
+        assert payload["dns_server"] == "1.1.1.1"
+        assert payload["result"] == ["2001:db8::1"]
+        assert payload["dnssec"] == "no"
+
+    # -------------------------------------------------------------------------
+    # Unknown transport method
+    # -------------------------------------------------------------------------
+
+    def test_unknown_transport_method_returns_error(_this_module, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(_this_module, "TRANSPORT_METHOD", "weird", raising=False)
+        monkeypatch.setattr(_this_module, "DNS_SERVERS", ["1.1.1.1"], raising=False)
+
+        payload = _call_tool_run("unknown transport method", "example.com", "A")
+        assert payload["success"] is False
+        assert payload["error"] == "Unknown transport method: weird"
+
+    # -------------------------------------------------------------------------
+    # Exception safety in tool_run()
+    # -------------------------------------------------------------------------
+
+    def test_make_query_exception_is_caught_and_reported(_this_module, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(_this_module, "TRANSPORT_METHOD", "plain", raising=False)
+
+        def make_query_boom(*args, **kwargs):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(dns.message, "make_query", make_query_boom, raising=True)
+
+        payload = _call_tool_run("make_query throws -> tool_run catches", "example.com", "A")
+        assert payload["success"] is False
+        assert payload["qname"] == "example.com"
+        assert payload["qtype"] == "A"
+        assert "Unknown exception occurred: boom" in payload["error"]
+
+    def test_use_dnssec_flag_is_passed_to_make_query(_this_module, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(_this_module, "TRANSPORT_METHOD", "plain", raising=False)
+        monkeypatch.setattr(_this_module, "DNS_SERVERS", ["1.1.1.1"], raising=False)
+        monkeypatch.setattr(_this_module, "USE_DNSSEC", True, raising=False)
+
+        original_make_query = dns.message.make_query
+        observed = {"want_dnssec": None}
+
+        def spy_make_query(qname, qtype, want_dnssec=False):
+            observed["want_dnssec"] = want_dnssec
+            return original_make_query(qname, qtype, want_dnssec=want_dnssec)
+
+        def udp_with_fallback(query, server_ip, timeout, port):
+            resp = _test_make_dns_response_with_answer(query, "example.com", "A", ["198.51.100.42"], ad=False)
+            return resp, False
+
+        monkeypatch.setattr(dns.message, "make_query", spy_make_query, raising=True)
+        monkeypatch.setattr(dns.query, "udp_with_fallback", udp_with_fallback, raising=True)
+
+        payload = _call_tool_run("USE_DNSSEC passed into make_query", "example.com", "A")
+        assert payload["success"] is True
+        assert observed["want_dnssec"] is True
+        assert payload["result"] == ["198.51.100.42"]
