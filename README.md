@@ -66,27 +66,27 @@ Name structure should look like: `prefix_main_suffix.py`
 
 ##### Examples #####
 - **simple name**: calc.py
-- **with prefix**: advanced_calc.py
+- **with prefix**: myproject-calc.py
 - **with suffix**: calc_tool.py
-- **with both**: advanced_calc_tool.py  
+- **with both**: myproject-calc_tool.py  
 
 Its **main** name part *(name without prefix/suffix and extension)* must correspond to name defined inside `TOOL_DEFINITION`.
 
 > ℹ **INFO:** The tool registry key is derived from the filename: it removes the configured `prefix` and `suffix` from the filename stem.
 >
-> **Example:** `prefix="advanced_"`, `suffix="_tool"`, file `advanced_calc_tool.py` -> tool name `calc`.
+> **Example:** `prefix="myproject-"`, `suffix="_tool"`, file `myproject-calc_tool.py` -> tool name `calc`.
 
 > ⚠ **WARNING:** `run_tool()` looks up tools by that derived name. The library does not enforce that `"function.name"` inside `TOOL_DEFINITION` matches the derived name - it’s a user contract. If they differ, the model may call a name that is not registered and you’ll get "`<name>` is not a registered tool".
 
-
 ##### Example #####
-**Name**: advanced_calc_tool.py\
+**Name**: myproject-calc_tool.py\
+**Settings**: prefix="", suffix="_tool"
 **Tool definition**: 
 ```json
     {
         "type": "function",
         "function": {
-            "name": "calc", <- this must match the main name part
+            "name": "myproject-calc", <- this must match the main name part
             [...]
 ```
 
