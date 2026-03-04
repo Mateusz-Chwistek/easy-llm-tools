@@ -3,6 +3,7 @@ from _thread import LockType
 from enum import IntEnum, auto
 from typing import Optional, TextIO
 
+
 class VerboseLevel(IntEnum):
     """
     Verbosity level for program output.
@@ -15,11 +16,12 @@ class VerboseLevel(IntEnum):
 
     **Rule:** the higher the level, the more messages the program emits.
     """
+
     NONE = 0
     LOW = auto()
     MID = auto()
     HIGH = auto()
-    
+
     def includes(self, message_level: "VerboseLevel") -> bool:
         """
         Check whether this verbosity level includes (covers) the given message level.
@@ -36,7 +38,8 @@ class VerboseLevel(IntEnum):
         :rtype: bool
         """
         return self >= message_level
-    
+
+
 class VerboseSettings:
     """
     Shared configuration for verbose printing/logging.
@@ -59,17 +62,17 @@ class VerboseSettings:
 
         :param verbose_level: Current verbosity level selected by the user.
         :type verbose_level: VerboseLevel
-        
+
         :param no_throw: If True, helper functions should suppress their own validation errors
                          (when validation is enabled elsewhere).
         :type no_throw: bool
-        
+
         :param output: Output stream (e.g., sys.stdout, open file). Must provide `write(str)`.
         :type output: TextIO
-        
+
         :param lock: Optional lock to prevent interleaved output when used from multiple threads.
         :type lock: Optional[LockType]
-        
+
         :raises TypeError: If any argument has an invalid type or `output` does not provide `write(str)`.
         """
         # Validate verbosity enum type to ensure comparisons and includes() work correctly.
@@ -96,6 +99,3 @@ class VerboseSettings:
 
         # Downstream helpers can skip validation because this object is already validated.
         self.validate = False
-
-
-        

@@ -1,12 +1,14 @@
+import sys
 from pathlib import Path
 from importlib import util
+from typing import Optional, Callable, Dict, Any
 from ._utils import return_or_raise, print_verbose
 from ._json_utils import prettify_json, is_valid_json
 from .verbose_settings import VerboseLevel, VerboseSettings
-from typing import Optional, Callable, Dict, Any
 
 # Upper bound for a "tool" Python file. Anything above this is likely a mistake (or not a tool module).
 _MAX_TOOL_FILE_SIZE_BYTES = 1_048_576  # 1MB
+
 
 def find_tools_json(
     base_dir: str | Path,
@@ -30,7 +32,7 @@ def find_tools_json(
 
     :param base_dir: Base directory to scan (string path or pathlib.Path).
     :type base_dir: str | Path
-    
+
     :param verbose_settings: Verbose configuration controlling logging and error behavior (no_throw, output, lock).
     :type verbose_settings: VerboseSettings
 
@@ -68,7 +70,7 @@ def find_tools_json(
         - If two different files produce the same tool name, the later one overwrites the earlier entry.
           This is intentional; a warning is logged, but discovery continues.
     """
-    
+
     if not isinstance(verbose_settings, VerboseSettings):
         raise TypeError("`verbose_settings` must be a `VerboseSettings` instance")
 
@@ -81,14 +83,14 @@ def find_tools_json(
                 "`base_dir` must be a non-empty str or `Path` instance"
             ),
         )
-    
+
     if not isinstance(max_depth, int):
         return return_or_raise(
             no_throw=verbose_settings.no_throw,
             return_value={},
             exception_factory=lambda: TypeError("`max_depth` must be of type int"),
         )
-        
+
     if max_depth < 0:
         return return_or_raise(
             no_throw=verbose_settings.no_throw,
@@ -100,39 +102,43 @@ def find_tools_json(
         return return_or_raise(
             no_throw=verbose_settings.no_throw,
             return_value={},
-            exception_factory=lambda: TypeError("`prefix` must be a of type str or None"),
+            exception_factory=lambda: TypeError(
+                "`prefix` must be a of type str or None"
+            ),
         )
-    
+
     if prefix is None:
         prefix = ""
-    
+
     if suffix is not None and not isinstance(suffix, str):
         return return_or_raise(
             no_throw=verbose_settings.no_throw,
             return_value={},
-            exception_factory=lambda: TypeError("`suffix` must be a of type str or None"),
+            exception_factory=lambda: TypeError(
+                "`suffix` must be a of type str or None"
+            ),
         )
-    
+
     if suffix is None:
         suffix = ""
-        
+
     if not isinstance(prettify, bool):
         return return_or_raise(
             no_throw=verbose_settings.no_throw,
             return_value={},
             exception_factory=lambda: TypeError("`prettify` must be a of type bool"),
         )
-    
+
     if not isinstance(validate, bool):
         return return_or_raise(
             no_throw=verbose_settings.no_throw,
             return_value={},
             exception_factory=lambda: TypeError("`validate` must be a of type bool"),
         )
-    
+
     if prettify:
         validate = False
-    
+
     base_path = Path(base_dir)
     try:
         base_path = base_path.expanduser().resolve()
@@ -153,6 +159,10 @@ def find_tools_json(
                 f"Base directory does not exist or is not a directory: {base_path}"
             ),
         )
+
+    base_path_str = str(base_path)
+    if base_path_str not in sys.path:
+        sys.path.insert(0, base_path_str)
 
     # ---- Scan + load ----
     tools: Dict[str, Dict[str, Any]] = {}
@@ -176,7 +186,7 @@ def find_tools_json(
         print_verbose(
             VerboseLevel.HIGH,
             f"Traversing dir (depth={depth}): {current_dir}",
-            verbose_settings
+            verbose_settings,
         )
 
         try:
@@ -189,7 +199,7 @@ def find_tools_json(
             )
             if not verbose_settings.no_throw:
                 raise
-            
+
             continue
 
         for entry in entries:
@@ -199,7 +209,7 @@ def find_tools_json(
                     print_verbose(
                         VerboseLevel.HIGH,
                         f"Skipping symlinked directory: {entry}",
-                        verbose_settings
+                        verbose_settings,
                     )
                     continue
 
@@ -207,7 +217,7 @@ def find_tools_json(
                     print_verbose(
                         VerboseLevel.HIGH,
                         f"Max depth reached; skipping directory: {entry}",
-                        verbose_settings
+                        verbose_settings,
                     )
                     continue
 
@@ -223,7 +233,7 @@ def find_tools_json(
             # Only *.py
             if entry.suffix != ".py":
                 continue
-            
+
             # Name filter: prefix + <anything> + suffix
             stem = entry.stem
             if not (stem.startswith(prefix) and stem.endswith(suffix)):
@@ -234,7 +244,7 @@ def find_tools_json(
                 print_verbose(
                     VerboseLevel.HIGH,
                     f"Rejected by name (no middle part): {entry.name}",
-                    verbose_settings
+                    verbose_settings,
                 )
                 continue
 
@@ -249,10 +259,10 @@ def find_tools_json(
                     f"Cannot stat file '{entry}'. Exception ({type(ex).__name__}): {ex}",
                     verbose_settings,
                 )
-                
+
                 if not verbose_settings.no_throw:
                     raise
-                
+
                 continue
 
             if size > _MAX_TOOL_FILE_SIZE_BYTES:
@@ -260,14 +270,14 @@ def find_tools_json(
                 print_verbose(
                     VerboseLevel.LOW,
                     f"Skipping file >1MB: {entry.name} ({size} bytes)",
-                    verbose_settings
+                    verbose_settings,
                 )
                 continue
 
             # Load module (executes top-level code)
-            module_name = stem[len(prefix):]
+            module_name = stem[len(prefix) :]
             if suffix:
-                module_name = module_name[:-len(suffix)]
+                module_name = module_name[: -len(suffix)]
 
             try:
                 spec = util.spec_from_file_location(module_name, entry)
@@ -285,7 +295,7 @@ def find_tools_json(
                 )
                 if not verbose_settings.no_throw:
                     raise
-                
+
                 continue
 
             # Extract only what we need
@@ -297,16 +307,22 @@ def find_tools_json(
                     raise AttributeError("Missing or non-callable `tool_run`")
 
                 if not isinstance(description_obj, str):
-                    raise TypeError("`TOOL_DEFINITION` must be a JSON string (type str)")
+                    raise TypeError(
+                        "`TOOL_DEFINITION` must be a JSON string (type str)"
+                    )
 
                 description: str = str(description_obj)
 
                 # Validate/prettify description JSON
                 if validate or prettify:
-                    result, _, error_message = is_valid_json(description, verbose_settings.no_throw)
+                    result, _, error_message = is_valid_json(
+                        description, verbose_settings.no_throw
+                    )
                     if not result:
-                        raise ValueError(error_message or "`TOOL_DEFINITION` is not valid JSON")
-                
+                        raise ValueError(
+                            error_message or "`TOOL_DEFINITION` is not valid JSON"
+                        )
+
                 if prettify:
                     description = prettify_json(description, verbose_settings)
 
@@ -323,33 +339,31 @@ def find_tools_json(
                 if not verbose_settings.no_throw:
                     raise
                 continue
-            
+
             if module_name in tools.keys():
                 print_verbose(
                     VerboseLevel.LOW,
                     f"Overwriting '{module_name}' tool",
                     verbose_settings,
                 )
-                
+
             # Accept tool
             tools[module_name] = {
                 "description": description,
                 "runner": runner,
             }
             accepted += 1
-            
+
             print_verbose(
                 VerboseLevel.MID,
                 f"Loaded tool: {module_name}, from file: {entry.name}",
-                verbose_settings
+                verbose_settings,
             )
 
     # MID summary with names
     tool_names = ", ".join(sorted(tools.keys())) if tools else "No tools found"
     print_verbose(
-        VerboseLevel.MID,
-        f"Loaded tools ({accepted}): {tool_names}",
-        verbose_settings
+        VerboseLevel.MID, f"Loaded tools ({accepted}): {tool_names}", verbose_settings
     )
 
     # LOW final status
@@ -367,4 +381,3 @@ def find_tools_json(
     )
 
     return tools
-    

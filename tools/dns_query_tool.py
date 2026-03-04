@@ -1,14 +1,15 @@
-import re
 import json
-
-import dns.flags
-import dns.rcode
-import dns.query
 import dns.message
-import dns.exception
-
+from helpers import (
+    QueryResult,
+    doh_query,
+    doq_query,
+    dot_query,
+    plain_query,
+)
+from ipaddress import ip_address
 from dns.message import QueryMessage
-from typing import Final, Literal, Optional, Sequence
+from typing import Optional, Sequence, Final, Literal
 
 # -----------------------------------------------------------------------------
 # User configuration
@@ -23,16 +24,27 @@ TIMEOUT: Final[float] = 5.0
 
 # Allowed DNS record types for query validation (in upper case).
 ALLOWED_RECORD_TYPES: Final[set[str]] = {
-    "A", "AAAA", "CAA", "CNAME", "DNSKEY", "DS", "MX", "NAPTR", "NS",
-    "NSEC", "NSEC3", "PTR", "RRSIG", "SOA", "SRV", "TLSA", "TXT"
+    "A",
+    "AAAA",
+    "CAA",
+    "CNAME",
+    "DNSKEY",
+    "DS",
+    "MX",
+    "NAPTR",
+    "NS",
+    "NSEC",
+    "NSEC3",
+    "PTR",
+    "RRSIG",
+    "SOA",
+    "SRV",
+    "TLSA",
+    "TXT",
 }
 
 # Selected transport method used to resolve queries.
 TRANSPORT_METHOD: Final[Literal["doh", "dot", "doq", "plain"]] = "plain"
-
-# If True, any failure in DoH/DoT/DoQ attempts will fall back to plain DNS and
-# the original transport errors will be prepended to the plain error field.
-ALLOW_FALLBACK_TO_PLAIN: Final[bool] = False
 
 # DoH endpoint URL for the configured resolver (must support DNS-over-HTTPS).
 ENDPOINT_URL: Final[str] = "https://cloudflare-dns.com/dns-query"
@@ -52,49 +64,6 @@ USE_DNSSEC: Final[bool] = False
 # Internal helpers
 # -----------------------------------------------------------------------------
 
-_QNAME_ALLOWED_RE = re.compile(r"^[A-Za-z0-9.-]+\.?$")
-
-
-def _validate_qname(qname: str) -> Optional[str]:
-    """
-    Validate a DNS query name (qname) using common hostname/FQDN rules.
-
-    Rules enforced:
-    - non-empty string after stripping
-    - total length <= 255 characters
-    - allowed characters: A-Z, a-z, 0-9, '-', '.', optional trailing '.'
-    - no empty labels (no '..')
-    - each label length: 1..63
-    - labels must not start or end with '-'
-
-    Args:
-        qname: Domain name to validate (already stripped).
-
-    Returns:
-        None if valid, otherwise an error message string.
-    """
-    if not qname:
-        return "Qname must be a non-empty string"
-
-    if len(qname) > 255:
-        return "Qname must be shorter than 256 characters"
-
-    if not _QNAME_ALLOWED_RE.fullmatch(qname):
-        return "Qname contains illegal characters (allowed: A-Z, 0-9, '-', '.')"
-
-    qname_normalized = qname[:-1] if qname.endswith(".") else qname
-
-    if ".." in qname_normalized:
-        return "Qname contains empty label ('..' is not allowed)"
-
-    labels = qname_normalized.split(".")
-    for label in labels:
-        if not (1 <= len(label) <= 63):
-            return "Each DNS label must be 1..63 characters long"
-        if label.startswith("-") or label.endswith("-"):
-            return "DNS labels must not start or end with '-'"
-
-    return None
 
 def _build_response(
     *,
@@ -105,24 +74,31 @@ def _build_response(
     dnssec_ad: bool = False,
     success: bool = False,
     error: str = "",
-    response: Optional[Sequence[str]] = None
+    response: Optional[Sequence[str]] = None,
 ) -> str:
     """
-    Build a JSON string describing a DNS query result.
+    Build the public JSON response returned by the tool.
 
-    Args:
-        qname: Queried domain name (e.g., "abc.def.pl") or an IP address.
-        qtype: Queried record type (e.g., "A", "AAAA").
-        dns_server: Address of the server used to answer the query (IP or endpoint).
-        transport_method: Transport identifier ("plain", "doh", "dot", "doq").
-        dnssec_ad: Whether the upstream resolver set the AD (Authenticated Data) flag.
-        success: Whether the query completed successfully.
-        error: Error message (empty string if none).
-        response: Result items (e.g., IP addresses). If None, an empty list is used.
-
-    Returns:
-        A JSON string with the standardized structure.
+    :param qname: Queried domain name or input name provided by the caller.
+    :type qname: str
+    :param qtype: DNS record type used for the query.
+    :type qtype: str
+    :param dns_server: Resolver IP or endpoint URL used to answer the query.
+    :type dns_server: str
+    :param transport_method: Transport identifier used by the query.
+    :type transport_method: str
+    :param dnssec_ad: True when the resolver returned the AD flag.
+    :type dnssec_ad: bool
+    :param success: True when the query completed successfully.
+    :type success: bool
+    :param error: Diagnostic text returned to the caller.
+    :type error: str
+    :param response: Query result items serialized into the response payload.
+    :type response: Optional[Sequence[str]]
+    :return: JSON string with the standardized tool response structure.
+    :rtype: str
     """
+
     result_list: list[str] = list(response) if response is not None else []
 
     payload: dict[str, object] = {
@@ -133,411 +109,37 @@ def _build_response(
         "dnssec": "yes" if dnssec_ad else "no",
         "success": success,
         "error": error,
-        "result": result_list
+        "result": result_list,
     }
 
     return json.dumps(payload, ensure_ascii=False)
-
-def _prepend_errors_to_plain_result(plain_result: str, prefix_errors: str) -> str:
-    """
-    Prepend an error string to the 'error' field of a JSON response string.
-
-    Args:
-        plain_result: JSON string returned by the plain DNS path.
-        prefix_errors: Error message(s) to prepend (may contain newlines).
-
-    Returns:
-        Updated JSON string with the merged error field.
-    """
-    if not prefix_errors:
-        return plain_result
-
-    try:
-        payload = json.loads(plain_result)
-        existing_error = payload.get("error", "") or ""
-        payload["error"] = (
-            f"{prefix_errors}\n{existing_error}" if existing_error else prefix_errors
-        )
-        return json.dumps(payload, ensure_ascii=False)
-    except Exception:
-        return plain_result
-
-def _fallback_to_plain_or_fail(
-    query: QueryMessage,
-    qname: str,
-    qtype: str,
-    transport_method: str,
-    dns_server: str,
-    errors: list[str]
-) -> str:
-    """
-    Handle fallback-to-plain behavior.
-
-    If ALLOW_FALLBACK_TO_PLAIN is True, plain DNS is attempted and transport errors
-    are prepended to the plain DNS error field. Otherwise, a failure response is
-    returned for the original transport.
-
-    Args:
-        query: Prepared DNS query message.
-        qname: Queried domain name.
-        qtype: Queried record type.
-        transport_method: Original transport method ("doh", "dot", "doq").
-        dns_server: Server/endpoint used by the original transport.
-        errors: Collected error messages from the original transport attempt.
-
-    Returns:
-        JSON string response.
-    """
-    error_text = "\n".join(errors)
-
-    if ALLOW_FALLBACK_TO_PLAIN:
-        plain_result = _plain_query(query, qname, qtype)
-        return _prepend_errors_to_plain_result(plain_result, error_text)
-
-    return _build_response(
-        qname=qname,
-        qtype=qtype,
-        dns_server=dns_server,
-        transport_method=transport_method,
-        success=False,
-        error=error_text,
-        response=None
-    )
-
-def _extract_answer_items(response: dns.message.Message) -> list[str]:
-    """
-    Convert DNS answer RRsets into a flat list of string items.
-
-    Args:
-        response: DNS response message.
-
-    Returns:
-        List of answer strings, e.g., IP addresses for A/AAAA.
-    """
-    return [rdata.to_text() for rrset in response.answer for rdata in rrset]
-
-
-# -----------------------------------------------------------------------------
-# Transport implementations (internal)
-# -----------------------------------------------------------------------------
-
-def _doh_query(query: QueryMessage, qname: str, qtype: str) -> str:
-    """
-    Perform a DNS-over-HTTPS query using ENDPOINT_URL.
-
-    Args:
-        query: Prepared DNS query message.
-        qname: Queried domain name.
-        qtype: Queried record type.
-
-    Returns:
-        JSON string response.
-    """
-    errors: list[str] = []
-
-    try:
-        response: Optional[dns.message.Message] = None
-        for server_ip in DNS_SERVERS:
-            try:
-                response = dns.query.https(
-                    query,
-                    ENDPOINT_URL,
-                    timeout=TIMEOUT,
-                    bootstrap_address=server_ip
-                )
-                break
-            except Exception as ex:
-                errors.append(f"Bootstrap {server_ip} failed: {ex}")
-
-        if response is None:
-            return _fallback_to_plain_or_fail(
-                query=query,
-                qname=qname,
-                qtype=qtype,
-                transport_method="doh",
-                dns_server=ENDPOINT_URL,
-                errors=["Failed to resolve DNS server for DoH query."]
-            )
-
-        rrc = response.rcode()
-        if rrc != dns.rcode.NOERROR:
-            errors.append(
-                f"Query to: {ENDPOINT_URL}, failed with error code: "
-                f"{dns.rcode.to_text(rrc)}"
-            )
-            return _fallback_to_plain_or_fail(
-                query=query,
-                qname=qname,
-                qtype=qtype,
-                transport_method="doh",
-                dns_server=ENDPOINT_URL,
-                errors=errors
-            )
-
-        result_items = _extract_answer_items(response)
-
-        return _build_response(
-            qname=qname,
-            qtype=qtype,
-            dns_server=ENDPOINT_URL,
-            transport_method="doh",
-            dnssec_ad=bool(response.flags & dns.flags.AD),
-            success=True,
-            error="\n".join(errors),
-            response=result_items
-        )
-
-    except dns.exception.Timeout:
-        errors.append("Timeout reached")
-    except Exception as ex:
-        errors.append(f"Unknown exception: {ex}")
-
-    return _fallback_to_plain_or_fail(
-        query=query,
-        qname=qname,
-        qtype=qtype,
-        transport_method="doh",
-        dns_server=ENDPOINT_URL,
-        errors=errors
-    )
-
-def _dot_query(query: QueryMessage, qname: str, qtype: str) -> str:
-    """
-    Perform a DNS-over-TLS query to the first DNS_SERVERS entry on TCP/853.
-
-    Args:
-        query: Prepared DNS query message.
-        qname: Queried domain name.
-        qtype: Queried record type.
-
-    Returns:
-        JSON string response.
-    """
-    errors: list[str] = []
-    server_ip = DNS_SERVERS[0] if DNS_SERVERS else ""
-
-    if not server_ip:
-        errors.append("No DNS servers configured")
-        return _fallback_to_plain_or_fail(
-            query=query,
-            qname=qname,
-            qtype=qtype,
-            transport_method="dot",
-            dns_server=server_ip,
-            errors=errors
-        )
-
-    try:
-        response = dns.query.tls(
-            query,
-            server_ip,
-            timeout=TIMEOUT,
-            port=853,
-            server_hostname=DOT_SNI
-        )
-
-        rrc = response.rcode()
-        if rrc != dns.rcode.NOERROR:
-            errors.append(
-                f"Query to: {server_ip}, failed with error code: "
-                f"{dns.rcode.to_text(rrc)}"
-            )
-            return _fallback_to_plain_or_fail(
-                query=query,
-                qname=qname,
-                qtype=qtype,
-                transport_method="dot",
-                dns_server=server_ip,
-                errors=errors
-            )
-
-        result_items = _extract_answer_items(response)
-
-        return _build_response(
-            qname=qname,
-            qtype=qtype,
-            dns_server=server_ip,
-            transport_method="dot",
-            dnssec_ad=bool(response.flags & dns.flags.AD),
-            success=True,
-            error="\n".join(errors),
-            response=result_items
-        )
-
-    except dns.exception.Timeout:
-        errors.append("Timeout reached")
-    except Exception as ex:
-        errors.append(f"Unknown exception: {ex}")
-
-    return _fallback_to_plain_or_fail(
-        query=query,
-        qname=qname,
-        qtype=qtype,
-        transport_method="dot",
-        dns_server=server_ip,
-        errors=errors
-    )
-
-def _doq_query(query: QueryMessage, qname: str, qtype: str) -> str:
-    """
-    Perform a DNS-over-QUIC query to the first DNS_SERVERS entry on UDP/853.
-
-    Args:
-        query: Prepared DNS query message.
-        qname: Queried domain name.
-        qtype: Queried record type.
-
-    Returns:
-        JSON string response.
-    """
-    errors: list[str] = []
-    server_ip = DNS_SERVERS[0] if DNS_SERVERS else ""
-
-    if not server_ip:
-        errors.append("No DNS servers configured")
-        return _fallback_to_plain_or_fail(
-            query=query,
-            qname=qname,
-            qtype=qtype,
-            transport_method="doq",
-            dns_server=server_ip,
-            errors=errors
-        )
-
-    try:
-        response = dns.query.quic(
-            query,
-            server_ip,
-            timeout=TIMEOUT,
-            port=853,
-            hostname=DOQ_SNI
-        )
-
-        rrc = response.rcode()
-        if rrc != dns.rcode.NOERROR:
-            errors.append(
-                f"Query to: {server_ip}, failed with error code: "
-                f"{dns.rcode.to_text(rrc)}"
-            )
-            return _fallback_to_plain_or_fail(
-                query=query,
-                qname=qname,
-                qtype=qtype,
-                transport_method="doq",
-                dns_server=server_ip,
-                errors=errors
-            )
-
-        result_items = _extract_answer_items(response)
-
-        return _build_response(
-            qname=qname,
-            qtype=qtype,
-            dns_server=server_ip,
-            transport_method="doq",
-            dnssec_ad=bool(response.flags & dns.flags.AD),
-            success=True,
-            error="\n".join(errors),
-            response=result_items
-        )
-
-    except dns.exception.Timeout:
-        errors.append("Timeout reached")
-    except Exception as ex:
-        errors.append(f"Unknown exception: {ex}")
-
-    return _fallback_to_plain_or_fail(
-        query=query,
-        qname=qname,
-        qtype=qtype,
-        transport_method="doq",
-        dns_server=server_ip,
-        errors=errors
-    )
-
-
-def _plain_query(query: QueryMessage, qname: str, qtype: str) -> str:
-    """
-    Perform a plain DNS query (UDP with TCP fallback) to configured DNS_SERVERS.
-
-    Args:
-        query: Prepared DNS query message.
-        qname: Queried domain name.
-        qtype: Queried record type.
-
-    Returns:
-        JSON string response.
-    """
-    errors: list[str] = []
-
-    for server_ip in DNS_SERVERS:
-        try:
-            response, _ = dns.query.udp_with_fallback(
-                query,
-                server_ip,
-                timeout=TIMEOUT,
-                port=53
-            )
-
-            rrc = response.rcode()
-            if rrc != dns.rcode.NOERROR:
-                errors.append(
-                    f"Query to: {server_ip}, failed with error code: "
-                    f"{dns.rcode.to_text(rrc)}"
-                )
-                continue
-
-            result_items = _extract_answer_items(response)
-
-            return _build_response(
-                qname=qname,
-                qtype=qtype,
-                dns_server=server_ip,
-                transport_method="plain",
-                dnssec_ad=bool(response.flags & dns.flags.AD),
-                success=True,
-                error="\n".join(errors),
-                response=result_items
-            )
-
-        except dns.exception.Timeout:
-            errors.append("Timeout reached")
-        except Exception as ex:
-            errors.append(f"Unknown exception: {ex}")
-
-    return _build_response(
-        qname=qname,
-        qtype=qtype,
-        transport_method="plain",
-        success=False,
-        error="\n".join(errors),
-        response=None
-    )
 
 
 # -----------------------------------------------------------------------------
 # Public API
 # -----------------------------------------------------------------------------
 
+
 def tool_run(qname: str, qtype: str) -> str:
     """
-    Validate input, build a DNS query message, execute a query using TRANSPORT_METHOD,
-    and return a JSON response string.
+    Validate tool input, execute a DNS query, and return a JSON response string.
 
-    Args:
-        qname: Domain name to resolve.
-        qtype: DNS record type (case-insensitive, validated against ALLOWED_RECORD_TYPES).
+    For PTR queries, if `qname` is an IPv4 or IPv6 address literal, it is
+    automatically converted to its reverse DNS pointer form before the query
+    is sent. Non-IP values are used as provided.
 
-    Returns:
-        JSON string with fields:
-            - qname, qtype, dns_server, transportMethod, dnssec, success, error, result
+    :param qname: Domain name to query.
+    :type qname: str
+    :param qtype: DNS record type requested by the caller.
+    :type qtype: str
+    :return: JSON string describing the query result and diagnostics.
+    :rtype: str
     """
+
     try:
         if not isinstance(qname, str):
             return _build_response(
-                success=False,
-                error="Qname must be a non-empty string",
-                response=None
+                success=False, error="Qname must be a non-empty string", response=None
             )
 
         if not isinstance(qtype, str):
@@ -545,62 +147,163 @@ def tool_run(qname: str, qtype: str) -> str:
                 qname=qname,
                 success=False,
                 error="Qtype must be a non-empty string",
-                response=None
+                response=None,
             )
 
         qname = qname.strip()
-        qtype = qtype.strip().upper()
-
-        qname_error = _validate_qname(qname)
-        if qname_error is not None:
+        qname_len = len(qname)
+        qname = qname[:-1] if qname_len > 0 and qname.endswith(".") else qname
+        if qname_len < 1 or qname_len > 255:
             return _build_response(
                 qname=qname,
                 qtype=qtype,
                 success=False,
-                error=qname_error,
-                response=None
+                error="Qname must be a non-empty string with max length of 255",
+                response=None,
             )
 
+        original_qname = qname
+        try:
+            address = ip_address(qname)
+            if address.version == 4 or address.version == 6:
+                qname = address.reverse_pointer
+        except ValueError:
+            pass
+
+        qtype = qtype.strip().upper()
         if not qtype:
             return _build_response(
-                qname=qname,
+                qname=original_qname,
                 qtype=qtype,
                 success=False,
                 error="Qtype must be a non-empty string",
-                response=None
+                response=None,
             )
 
         if qtype not in ALLOWED_RECORD_TYPES:
             allowed = ", ".join(sorted(ALLOWED_RECORD_TYPES))
             return _build_response(
-                qname=qname,
+                qname=original_qname,
                 qtype=qtype,
                 success=False,
                 error=f"Incorrect qtype {qtype}. Qtype must be one of {allowed}",
-                response=None
+                response=None,
+            )
+
+        if len(DNS_SERVERS) < 1:
+            return _build_response(
+                qname=original_qname,
+                qtype=qtype,
+                success=False,
+                error="No DNS server configured",
+                response=None,
             )
 
         query: QueryMessage = dns.message.make_query(
-            qname,
-            qtype,
-            want_dnssec=USE_DNSSEC
+            qname, qtype, want_dnssec=USE_DNSSEC
         )
 
         if TRANSPORT_METHOD == "plain":
-            return _plain_query(query, qname, qtype)
+            query_result: QueryResult = plain_query(query, DNS_SERVERS, TIMEOUT)
+            return _build_response(
+                qname=original_qname,
+                qtype=qtype,
+                dns_server=(
+                    query_result.used_endpoint
+                    if query_result.used_endpoint is not None
+                    else "Unknown"
+                ),
+                transport_method="plain",
+                dnssec_ad=(
+                    query_result.dnssec_ad
+                    if query_result.dnssec_ad is not None
+                    else False
+                ),
+                success=query_result.success,
+                error="\n".join(
+                    query_result.errors if query_result.errors is not None else []
+                ),
+                response=query_result.result,
+            )
         elif TRANSPORT_METHOD == "doh":
-            return _doh_query(query, qname, qtype)
+            query_result: QueryResult = doh_query(
+                query, DNS_SERVERS, ENDPOINT_URL, TIMEOUT
+            )
+            return _build_response(
+                qname=original_qname,
+                qtype=qtype,
+                dns_server=(
+                    query_result.used_endpoint
+                    if query_result.used_endpoint is not None
+                    else "Unknown"
+                ),
+                transport_method="doh",
+                dnssec_ad=(
+                    query_result.dnssec_ad
+                    if query_result.dnssec_ad is not None
+                    else False
+                ),
+                success=query_result.success,
+                error="\n".join(
+                    query_result.errors if query_result.errors is not None else []
+                ),
+                response=query_result.result,
+            )
         elif TRANSPORT_METHOD == "dot":
-            return _dot_query(query, qname, qtype)
+            query_result: QueryResult = dot_query(
+                query, DNS_SERVERS[0], DOT_SNI, TIMEOUT
+            )
+            return _build_response(
+                qname=original_qname,
+                qtype=qtype,
+                dns_server=(
+                    query_result.used_endpoint
+                    if query_result.used_endpoint is not None
+                    else "Unknown"
+                ),
+                transport_method="dot",
+                dnssec_ad=(
+                    query_result.dnssec_ad
+                    if query_result.dnssec_ad is not None
+                    else False
+                ),
+                success=query_result.success,
+                error="\n".join(
+                    query_result.errors if query_result.errors is not None else []
+                ),
+                response=query_result.result,
+            )
         elif TRANSPORT_METHOD == "doq":
-            return _doq_query(query, qname, qtype)
+            query_result: QueryResult = doq_query(
+                query, DNS_SERVERS[0], DOQ_SNI, TIMEOUT
+            )
+            return _build_response(
+                qname=original_qname,
+                qtype=qtype,
+                dns_server=(
+                    query_result.used_endpoint
+                    if query_result.used_endpoint is not None
+                    else "Unknown"
+                ),
+                transport_method="doq",
+                dnssec_ad=(
+                    query_result.dnssec_ad
+                    if query_result.dnssec_ad is not None
+                    else False
+                ),
+                success=query_result.success,
+                error="\n".join(
+                    query_result.errors if query_result.errors is not None else []
+                ),
+                response=query_result.result,
+            )
 
         return _build_response(
-            qname=qname,
+            qname=original_qname,
             qtype=qtype,
             success=False,
             error=f"Unknown transport method: {TRANSPORT_METHOD}",
-            response=None
+            response=None,
         )
 
     except Exception as ex:
@@ -609,8 +312,9 @@ def tool_run(qname: str, qtype: str) -> str:
             qtype=qtype if isinstance(qtype, str) else "Unknown",
             success=False,
             error=f"Unknown exception occurred: {ex}",
-            response=None
+            response=None,
         )
+
 
 TOOL_DEFINITION = json.dumps(
     {
@@ -620,18 +324,17 @@ TOOL_DEFINITION = json.dumps(
             "description": (
                 "Resolve DNS records for a given qname (domain or IP for PTR) and qtype.\n\n"
                 "Output: a JSON string with fields:\n"
-                "- qname: queried name (domain or IP)\n"
+                "- qname: queried name. For PTR you can pass an IP address "
+                "literal (e.g., '1.2.3.4' or '2001:4860:4860::8888') or a "
+                "reverse name (e.g., '4.3.2.1.in-addr.arpa' or the "
+                "corresponding '...ip6.arpa').\n"
                 "- qtype: record type used (uppercase)\n"
                 "- dns_server: upstream server IP (plain/dot/doq) or DoH endpoint URL\n"
                 "- transportMethod: one of 'plain', 'doh', 'dot', 'doq'\n"
                 "- dnssec: 'yes' if AD flag was set by resolver, otherwise 'no'\n"
                 "- success: boolean, True when query succeeded\n"
-                "- error: diagnostic messages (may be non-empty even when success=true). "
-                "Examples: earlier upstream attempts failed, timeouts on some servers, "
-                "or partial transport errors before a successful retry."
-                "Diagnostics are concatenated with a newline separator (one issue per line, in chronological order). "
-                "This can include multiple upstream attempts and/or fallback errors.\n"
-                "- result: list of answer items as strings (e.g., IPs for A/AAAA)\n"
+                "- error: diagnostic messages. "
+                "- result: list of answer items as strings (e.g., IPs for A/AAAA or domain names for PTR)\n"
             ),
             "parameters": {
                 "type": "object",
@@ -652,5 +355,5 @@ TOOL_DEFINITION = json.dumps(
             },
         },
     },
-    ensure_ascii=False
+    ensure_ascii=False,
 )

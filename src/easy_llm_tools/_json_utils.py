@@ -4,25 +4,25 @@ from ._utils import return_or_raise, print_verbose
 from typing import Optional, Any, Dict, List
 from .verbose_settings import VerboseSettings, VerboseLevel
 
+
 def is_valid_json(
-    json_str: str,
-    no_throw: bool = False
+    json_str: str, no_throw: bool = False
 ) -> tuple[bool, Optional[Any], Optional[str]]:
     """
     Validate and parse a JSON string.
 
     :param json_str: Input string to be parsed as JSON.
     :type json_str: str
-    
+
     :param no_throw: If True, suppress errors and return (False, None, error_message) instead of raising.
     :type no_throw: bool
-    
+
     :return: Tuple (is_valid, parsed_value, error_message).
         - On success: (True, parsed_value, None)
         - On failure with no_throw=True: (False, None, "Exception (Type): message")
         - On invalid input type with no_throw=True: (False, None, "<reason>")
     :rtype: tuple[bool, Optional[Any], Optional[str]]
-    
+
     :raises TypeError: If `json_str` is not a str (when no_throw is False).
     :raises json.JSONDecodeError: If `json_str` is invalid JSON (when no_throw is False).
     :raises Exception: Re-raises any unexpected exception from `json.loads` (when no_throw is False).
@@ -34,7 +34,7 @@ def is_valid_json(
         return return_or_raise(
             no_throw,
             return_value=(False, None, "`json_str` must be of type str"),
-            exception_factory=lambda: TypeError("`json_str` must be of type str")
+            exception_factory=lambda: TypeError("`json_str` must be of type str"),
         )
 
     try:
@@ -47,20 +47,20 @@ def is_valid_json(
             return False, None, f"Exception ({type(ex).__name__}): {ex}"
         raise
 
-    
+
 def prettify_json(json_text: str, verbose_settings: VerboseSettings) -> str:
     """
     Pretty-format a JSON string for improved readability (especially for LLM prompts).
 
     :param json_text: Raw JSON text to format.
     :type json_text: str
-    
+
     :param verbose_settings: Shared verbose settings (controls error handling + optional logging).
     :type verbose_settings: VerboseSettings
-    
+
     :return: Prettified JSON string. If input is invalid and errors are suppressed, returns the original input.
     :rtype: str
-    
+
     :raises TypeError: If `verbose_settings` is not a VerboseSettings instance.
     :raises TypeError: If `json_text` is not a str (when no_throw is False).
     :raises RuntimeError: If `json_text` is not valid JSON (when no_throw is False).
@@ -79,11 +79,13 @@ def prettify_json(json_text: str, verbose_settings: VerboseSettings) -> str:
         return return_or_raise(
             verbose_settings.no_throw,
             return_value=json_text,
-            exception_factory=lambda: TypeError("`json_text` must be of type str")
+            exception_factory=lambda: TypeError("`json_text` must be of type str"),
         )
 
     # Validate and parse input JSON; returns (ok, parsed_obj, error_message).
-    result, valid_json, error_message = is_valid_json(json_text, verbose_settings.no_throw)
+    result, valid_json, error_message = is_valid_json(
+        json_text, verbose_settings.no_throw
+    )
 
     if not result:
         # Optionally log a user-friendly error message before returning/raising.
@@ -94,7 +96,7 @@ def prettify_json(json_text: str, verbose_settings: VerboseSettings) -> str:
         return return_or_raise(
             verbose_settings.no_throw,
             return_value=json_text,
-            exception_factory=lambda: RuntimeError("`json_text` is not a valid json")
+            exception_factory=lambda: RuntimeError("`json_text` is not a valid json"),
         )
 
     # Stores mapping: placeholder token -> compact one-line JSON array string
@@ -113,7 +115,7 @@ def prettify_json(json_text: str, verbose_settings: VerboseSettings) -> str:
         return json.dumps(
             value,
             ensure_ascii=False,
-            separators=(",", ":"), 
+            separators=(",", ":"),
         )
 
     # Walk the object and replace every list with a placeholder string
@@ -126,7 +128,9 @@ def prettify_json(json_text: str, verbose_settings: VerboseSettings) -> str:
 
         if isinstance(value, dict):
             # Recursively process JSON objects (dicts) and preserve structure.
-            return {key: replace_lists_with_placeholders(val) for key, val in value.items()}
+            return {
+                key: replace_lists_with_placeholders(val) for key, val in value.items()
+            }
 
         # Scalars (str/int/float/bool/None) pass through unchanged.
         return value
@@ -137,14 +141,14 @@ def prettify_json(json_text: str, verbose_settings: VerboseSettings) -> str:
     # Pretty-print the transformed JSON (indentation applies to objects; lists are currently tokens).
     pretty_text = json.dumps(
         transformed_obj,
-        indent=1,              # smaller indent to reduce tokens
+        indent=1,  # smaller indent to reduce tokens
         ensure_ascii=False,
-        separators=(",", ": "), # reduce whitespace globally (token-friendly)
+        separators=(",", ": "),  # reduce whitespace globally (token-friendly)
     )
 
     # Replace quoted placeholders with the one-line list JSON
     # We replace the JSON string literal: "__TOKEN__" -> [ ... ]
     for token, one_line_list_json in placeholders.items():
-        pretty_text = pretty_text.replace(f"\"{token}\"", one_line_list_json)
+        pretty_text = pretty_text.replace(f'"{token}"', one_line_list_json)
 
     return pretty_text
