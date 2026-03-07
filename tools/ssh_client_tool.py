@@ -456,10 +456,16 @@ def tool_run(
         ]:
             resolved_host, resolved_host_os, resolved_shell = (
                 allowed_host,
-                allowed_os.lower().strip(),
-                allowed_shell.lower().strip(),
+                allowed_os,
+                allowed_shell,
             )
             break
+    
+    if isinstance(resolved_host_os, str):
+        resolved_host_os = resolved_host_os.lower().strip()
+
+    if isinstance(resolved_shell, str):
+        resolved_shell = resolved_shell.lower().strip()
 
     if resolved_host is None:
         return _build_response(
