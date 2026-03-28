@@ -460,7 +460,7 @@ def tool_run(
                 allowed_shell,
             )
             break
-    
+
     if isinstance(resolved_host_os, str):
         resolved_host_os = resolved_host_os.lower().strip()
 

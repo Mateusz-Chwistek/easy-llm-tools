@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+
+{% block title %}Login - Private Vault{% endblock %}
+
+{% block content %}
+<div class="auth-wrapper">
+    <div class="card auth-card">
+        <div class="auth-tabs">
+            <button class="auth-tab active" data-tab="login">Login</button>
+            {% if not registration_locked %}
+            <button class="auth-tab" data-tab="register">Register</button>
+            {% endif %}
+        </div>
+        <div id="message-container"></div>
+        <form id="login-form">
+            <div class="form-group">
+                <label class="form-label" for="login-username">Username</label>
+                <input class="form-input" type="text" id="login-username" required>
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="login-password">Password</label>
+                <input class="form-input" type="password" id="login-password" required>
+            </div>
+            <button type="submit" class="btn btn-primary btn-full">Login</button>
+        </form>
+        {% if not registration_locked %}
+        <form id="register-form" class="hidden">
+            <div class="form-group">
+                <label class="form-label" for="register-username">Username</label>
+                <input class="form-input" type="text" id="register-username" required>
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="register-password">Password</label>
+                <input class="form-input" type="password" id="register-password" required>
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="register-confirm">Confirm Password</label>
+                <input class="form-input" type="password" id="register-confirm" required>
+            </div>
+            <button type="submit" class="btn btn-primary btn-full">Register</button>
+        </form>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script defer src="{{ url_for('static', filename='js/auth.js') }}"></script>
+{% endblock %}

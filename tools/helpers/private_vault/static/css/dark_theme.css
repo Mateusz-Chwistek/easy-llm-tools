@@ -1,0 +1,36 @@
+:root {
+    --color-bg: #111111;
+    --color-surface: #1a1a1a;
+    --color-surface-hover: #252525;
+    --color-text: #e5e5e5;
+    --color-text-muted: #9ca3af;
+    --color-text-inverse: #ffffff;
+    --color-primary: #3b82f6;
+    --color-primary-hover: #60a5fa;
+    --color-border: #333333;
+    --color-input-bg: #252525;
+    --color-input-border: #404040;
+    --color-nav-bg: #1a1a1a;
+    --color-nav-border: #2a2a2a;
+    --color-shadow: rgba(0, 0, 0, 0.25);
+    --color-error: #ef4444;
+    --color-error-bg: #1f0000;
+    --color-error-border: #7f1d1d;
+    --color-success: #22c55e;
+    --color-success-bg: #001f00;
+    --color-success-border: #166534;
+    --color-danger: #ef4444;
+    --color-danger-hover: #f87171;
+    --color-secrecy-0: #9ca3af;
+    --color-secrecy-0-bg: #1f2937;
+    --color-secrecy-1: #60a5fa;
+    --color-secrecy-1-bg: #172554;
+    --color-secrecy-2: #fbbf24;
+    --color-secrecy-2-bg: #451a03;
+    --color-secrecy-3: #f87171;
+    --color-secrecy-3-bg: #450a0a;
+    --color-tag: #818cf8;
+    --color-tag-bg: #1e1b4b;
+    --color-toggle-bg: #404040;
+    --color-toggle-knob: #e5e5e5;
+}

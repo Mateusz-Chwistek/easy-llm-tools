@@ -32,14 +32,12 @@ docker run -d --name easy-llm-tools-mcp easy-llm-tools-mcp
 > - `MCP_TRANSPORT` - If set to an unrecognized value, the server silently falls back to `"stdio"`.
 > - `HOST` - Must match the container's bind address. Use `"0.0.0.0"` (or leave empty) to accept connections from outside the container.
 > - `PORT` - The container-internal port. You must publish the same port with `-p` in `docker run` (e.g. `-p 9000:9000`).
-> - `LOG_PATH` - Path inside the container. To persist logs, mount the parent directory as a volume (see [Persistent logging](#persistent-logging-)).
 
 All environment variables are optional. Defaults are shown below.
 
 - `MCP_TRANSPORT` - Transport protocol. `"stdio"` (default) or `"streamable-http"`.
 - `HOST` - Bind address for the streamable-http transport. Default: `"0.0.0.0"`.
 - `PORT` - Bind port for the streamable-http transport. Default: `9000`.
-- `LOG_PATH` - Path to the server log file inside the container. Default: `"/var/log/easy_llm_tools_mcp/server.log"`.
 
 Example with streamable-http:
 
@@ -51,14 +49,16 @@ docker run -d -p 9000:9000 \
     easy-llm-tools-mcp
 ```
 
-### Persistent logging ###
+### Persistent data ###
 
-By default logs are written to `/var/log/easy_llm_tools_mcp/` inside the container and lost when the container is removed. To persist them, mount a Docker volume:
+Logs, databases, and TLS certificates are stored under `/app/permanent/` inside
+the container. Without a volume mount this data is lost when the container is
+removed. To persist it, mount a Docker volume:
 
 ```bash
 docker run -d -p 9000:9000 \
     -e MCP_TRANSPORT=streamable-http \
-    -v easy-llm-tools-logs:/var/log/easy_llm_tools_mcp \
+    -v easy-llm-tools-data:/app/permanent \
     --name easy-llm-tools-mcp \
     easy-llm-tools-mcp
 ```
@@ -80,7 +80,7 @@ Add the following to your `settings.json` (user or project level) to register th
 
 > ℹ **INFO:** The `stdio` transport requires `-i` (interactive) so Docker keeps stdin open for the MCP protocol. Do not use `-d` (detached) or `-t` (tty) here.
 
-Example with a custom log path and persistent logging volume:
+Example with persistent data volume:
 
 ```json
 {
@@ -89,8 +89,7 @@ Example with a custom log path and persistent logging volume:
       "command": "docker",
       "args": [
         "run", "--rm", "-i",
-        "-e", "LOG_PATH=/var/log/mcp/server.log",
-        "-v", "easy-llm-tools-logs:/var/log/mcp",
+        "-v", "easy-llm-tools-data:/app/permanent",
         "easy-llm-tools-mcp"
       ]
     }
@@ -110,7 +109,8 @@ To add a new tool:
 2. Place it in the `tools/` directory. The `Dockerfile` copies all `mcp_*_tool.py` files automatically.
 3. If the tool has Python dependencies, add them to `tools/mcp_requirements.txt` - they are installed during the Docker build.
 4. If the tool uses helper modules, place them in `tools/helpers/` - that directory is also copied into the image. Helpers requirements should also be placed inside `tools/mcp_requirements.txt`.
-5. Rebuild the image.
+5. If the tool requires environment variables (e.g. secrets), create a `tools/mcp.env` file. The `Dockerfile` copies it to `/app/tools/.env` inside the container. See `tools/.env.example` for reference.
+6. Rebuild the image.
 
 > The tool file must define `TOOL_DEFINITION` (JSON string) and a `tool_run` function, same as any other `easy-llm-tools` tool. See the [Defining tools](#defining-tools-) section below for details.
 

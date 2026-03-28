@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+
+{% block title %}Unlock - Private Vault{% endblock %}
+
+{% block content %}
+<div class="auth-wrapper">
+    <div class="card auth-card">
+        <h2>Generate Session Key</h2>
+        <p class="text-muted">Enter your password and select a secrecy level to generate a read-only session key for LLM access.</p>
+        <div id="message-container"></div>
+        <form id="unlock-form">
+            <div class="form-group">
+                <label class="form-label" for="unlock-password">Password</label>
+                <input class="form-input" type="password" id="unlock-password" required>
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="unlock-secrecy">Maximum Secrecy Level</label>
+                <select class="form-input" id="unlock-secrecy">
+                    <option value="0">Unclassified</option>
+                    <option value="1">Confidential</option>
+                    <option value="2">Secret</option>
+                    <option value="3">Top Secret</option>
+                </select>
+            </div>
+            <button type="submit" class="btn btn-primary btn-full">Generate Key</button>
+        </form>
+        <div id="session-key-result" class="hidden">
+            <h3>Your Session Key</h3>
+            <p class="text-muted">Copy this key and provide it to the LLM. It expires in 30 minutes.</p>
+            <div class="session-key-display">
+                <code id="session-key-value"></code>
+            </div>
+            <button id="copy-key-btn" class="btn btn-secondary btn-full">Copy to Clipboard</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script defer src="{{ url_for('static', filename='js/unlock.js') }}"></script>
+{% endblock %}

@@ -16,7 +16,8 @@ DEFAULT_TRANSPORT: TransportType = "stdio"
 if __name__ == "__main__":
     # Thread-safe log file shared by the easy-llm-tools verbose output.
     log_lock: Lock = Lock()
-    log_path: Path = Path(os.getenv("LOG_PATH", "/var/log/easy_llm_tools_mcp/server.log"))
+    permanent_dir: Path = Path(__file__).resolve().parent / "permanent"
+    log_path: Path = permanent_dir / "logs" / "server.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_file: TextIOWrapper = open(log_path, "a")
 

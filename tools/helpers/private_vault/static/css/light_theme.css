@@ -1,0 +1,36 @@
+:root {
+    --color-bg: #f0f2f5;
+    --color-surface: #ffffff;
+    --color-surface-hover: #f8f9fa;
+    --color-text: #1a1a1a;
+    --color-text-muted: #6b7280;
+    --color-text-inverse: #ffffff;
+    --color-primary: #2563eb;
+    --color-primary-hover: #1d4ed8;
+    --color-border: #d1d5db;
+    --color-input-bg: #ffffff;
+    --color-input-border: #d1d5db;
+    --color-nav-bg: #ffffff;
+    --color-nav-border: #e5e7eb;
+    --color-shadow: rgba(0, 0, 0, 0.06);
+    --color-error: #dc2626;
+    --color-error-bg: #fef2f2;
+    --color-error-border: #fecaca;
+    --color-success: #16a34a;
+    --color-success-bg: #f0fdf4;
+    --color-success-border: #bbf7d0;
+    --color-danger: #dc2626;
+    --color-danger-hover: #b91c1c;
+    --color-secrecy-0: #6b7280;
+    --color-secrecy-0-bg: #f3f4f6;
+    --color-secrecy-1: #2563eb;
+    --color-secrecy-1-bg: #eff6ff;
+    --color-secrecy-2: #d97706;
+    --color-secrecy-2-bg: #fffbeb;
+    --color-secrecy-3: #dc2626;
+    --color-secrecy-3-bg: #fef2f2;
+    --color-tag: #6366f1;
+    --color-tag-bg: #eef2ff;
+    --color-toggle-bg: #d1d5db;
+    --color-toggle-knob: #ffffff;
+}

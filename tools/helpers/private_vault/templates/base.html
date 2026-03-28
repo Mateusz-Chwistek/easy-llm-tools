@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ csrf_token() }}">
+    <title>{% block title %}Private Vault{% endblock %}</title>
+    <link rel="stylesheet" id="theme-light" href="{{ url_for('static', filename='css/light_theme.css') }}">
+    <link rel="stylesheet" id="theme-dark" href="{{ url_for('static', filename='css/dark_theme.css') }}" disabled>
+    <script src="{{ url_for('static', filename='js/theme_init.js') }}"></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <nav class="navbar">
+        <a href="/vault" class="nav-brand">Private Vault</a>
+        <div class="nav-links">
+            {% if current_user.is_authenticated %}
+            <a href="/vault" class="nav-link">Vault</a>
+            <a href="/unlock" class="nav-link">Unlock</a>
+            {% if current_user.is_admin %}
+            <button id="reg-lock-btn" class="btn-ghost nav-link"
+                    data-locked="{{ 'true' if registration_locked else 'false' }}">
+                Reg: {{ "Locked" if registration_locked else "Open" }}
+            </button>
+            {% endif %}
+            <button id="logout-btn" class="btn-ghost nav-link">Logout</button>
+            {% endif %}
+            <button id="theme-toggle" class="theme-toggle" title="Toggle theme"></button>
+        </div>
+    </nav>
+    <main class="container">
+        <div id="flash-container"></div>
+        {% block content %}{% endblock %}
+    </main>
+    <script defer src="{{ url_for('static', filename='js/common.js') }}"></script>
+    <script defer src="{{ url_for('static', filename='js/theme.js') }}"></script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

@@ -13,6 +13,12 @@
   the output as a JSON string. It supports multiple transport methods and can
   also request **DNSSEC-related** data.
 
+- [**Private Vault**](#private-vault-private_vault_toolpy)
+  **Private Vault** gives the model **read-only** access to user-encrypted
+  notes stored in a local SQLite database with two-layer AES-256-GCM
+  encryption. Access is gated by a session key with a configurable secrecy
+  level that is enforced both logically and cryptographically.
+
 ## SSH Client (ssh_client_tool.py) ##
 
 **SSH Client** is a tool module that executes **non-interactive** shell
@@ -256,4 +262,164 @@ Install commands:
 ```bash
 python -m pip install dnspython
 python -m pip install "dnspython[doq]"
+```
+
+
+## Private Vault (private_vault_tool.py) ##
+
+**Private Vault** is a tool module that gives the model **read-only** access to
+user-managed encrypted notes. It runs a local **HTTPS server** (started
+automatically on first import) backed by **SQLite** and **two-layer
+AES-256-GCM** encryption (per-level key + per-user key). The model
+authenticates with a **session key** that the user generates through the web UI,
+scoped to a maximum **secrecy level**.
+
+### What it does ###
+
+- Starts the vault HTTPS server in a background daemon thread (if not already
+  running)
+- Accepts two actions:
+  - `list`: returns all entries at or below the session key's secrecy level
+    (id, title, tags, created/modified dates, secrecy level)
+  - `read`: decrypts and returns the full content of a single entry by id
+- Validates the session key on every call; returns an error with the unlock
+  URL if the key is missing, invalid, or expired
+- Enforces secrecy level checks: the model cannot list or read entries above
+  the session key's level, even by guessing entry IDs
+- Returns all results as JSON strings
+
+### Important behavior ###
+
+> **Session keys are short-lived.** By default they expire after 30 minutes.
+> When a user generates a new session key via /unlock, the previous one is
+> invalidated immediately.
+
+> **Encryption keys exist only in memory.** Restarting the server process
+> invalidates all active keys. Users must log in and unlock again.
+
+> **The tool is read-only.** The model cannot create, edit, or delete entries.
+> All write operations happen through the web UI only.
+
+> **Startup is protected by a file lock.** When multiple processes try to start
+> the vault simultaneously, only one proceeds; the others wait until the server
+> is ready.
+
+> **Registration is locked by default.** The first registered user becomes the
+> admin and registration locks automatically. The admin can toggle registration
+> open or closed via the "Reg: Locked/Open" button in the navbar.
+
+### How to set up ###
+
+1. Create a `.env` file in the `tools/` directory (see `.env.example`):
+   ```
+   VAULT_SECRET=your-strong-secret-here
+   FLASK_SECRET=your-flask-session-secret-here
+   VAULT_LEVEL_SECRET_0=your-level-0-secret
+   VAULT_LEVEL_SECRET_1=your-level-1-secret
+   VAULT_LEVEL_SECRET_2=your-level-2-secret
+   VAULT_LEVEL_SECRET_3=your-level-3-secret
+   ```
+   All six secrets must be present and non-empty. Each should be a unique,
+   strong random value. For MCP server deployment, name the file `mcp.env`
+   instead. The Dockerfile copies `tools/mcp.env` to `/app/tools/.env`
+   automatically.
+
+2. On first startup the server generates a self-signed TLS certificate in
+   `permanent/vault/certs/`. This certificate is reused on subsequent runs.
+
+3. Open `https://localhost:8000` in a browser:
+   - Register the first user account (this user becomes the **admin** and
+     registration is **locked automatically**)
+   - Log in
+   - Create entries with titles, content, tags, and secrecy levels
+   - Go to `/unlock`, re-enter your password, and select a secrecy level to
+     generate a session key for the model
+
+### How to configure ###
+
+Configuration is split across several files. Each file has its constants at
+the top with inline comments.
+
+**`helpers/vault_service.py`** -- server and TLS settings:
+
+- `VAULT_PORT`: HTTPS port (default: `8000`)
+- `VAULT_HOST`: bind address (default: `127.0.0.1`). For MCP server
+  deployment inside a Docker container, change this to `0.0.0.0`.
+  Do not bind to `0.0.0.0` on bare metal -- the built-in server is
+  not hardened for direct network exposure
+- `CERT_VALIDITY_DAYS`: certificate validity period (default: `365`)
+
+**`helpers/private_vault/key_vault.py`** -- encryption and key expiration:
+
+- `SCRYPT_N` / `SCRYPT_R` / `SCRYPT_P`: scrypt cost parameters for key
+  derivation
+- `KEY_LENGTH`: derived AES key length in bytes (default: `32`)
+- `MASTER_KEY_EXPIRATION_MINUTES`: web UI session key lifetime (default: `120`)
+- `SESSION_KEY_EXPIRATION_MINUTES`: model session key lifetime (default: `30`)
+- `NONCE_LENGTH`: AES-GCM nonce length in bytes (default: `12`)
+- `ENV_PATH`: path to the `.env` file containing `VAULT_SECRET`, `FLASK_SECRET`,
+  and `VAULT_LEVEL_SECRET_0..3`
+
+**`helpers/private_vault/routes/auth.py`** -- password policy:
+
+- `PASSWORD_MIN_LENGTH` / `PASSWORD_MAX_LENGTH`: allowed password length range
+- `PASSWORD_REQUIRE_UPPERCASE` / `PASSWORD_REQUIRE_LOWERCASE`: letter requirements
+- `PASSWORD_REQUIRE_DIGIT`: digit requirement
+- `PASSWORD_REQUIRE_SPECIAL`: special character requirement
+- `PASSWORD_SPECIAL_CHARS`: regex character class for allowed special characters
+
+**`helpers/private_vault/routes/vault.py`** -- entry encryption options:
+
+- `ENCRYPT_TITLES`: whether to encrypt entry titles before storing (default:
+  `True`)
+- `ENCRYPT_META`: whether to encrypt entry metadata before storing (default:
+  `True`)
+
+**`private_vault_tool.py`** -- tool settings:
+
+- `UNLOCK_URL`: URL shown to the model when no valid session key is provided
+
+### Secrecy levels ###
+
+Each entry and each session key has a secrecy level. The model can only access
+entries at or below the session key's level:
+
+- `0` -- unclassified
+- `1` -- confidential
+- `2` -- secret
+- `3` -- top secret
+
+Secrecy levels are enforced both logically (access-control checks) and
+cryptographically: each level has its own encryption key derived from a
+dedicated secret. A session key for level 2 only receives level keys 0, 1,
+and 2 -- it cannot decrypt level 3 data even if the access check is bypassed.
+
+### Response format ###
+
+The tool returns a JSON string with the following fields:
+
+- `action`: the action that was performed (`list` or `read`)
+- `success`: `true` when the action completed successfully
+- `error`: diagnostic message (empty on success)
+- `data`: action-specific payload
+  - For `list`: array of entry objects (id, title, tags, dates, secrecy level)
+  - For `read`: single entry object (id, title, content, tags, dates, secrecy
+    level)
+
+### Requirements ###
+
+Python packages to install:
+
+- `flask`
+- `flask-login`
+- `flask-sqlalchemy`
+- `flask-wtf`
+- `flask-limiter`
+- `python-dotenv`
+- `cryptography`
+
+Install command:
+
+```bash
+python -m pip install flask flask-login flask-sqlalchemy flask-wtf flask-limiter python-dotenv cryptography
 ```
