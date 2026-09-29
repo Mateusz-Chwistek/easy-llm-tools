@@ -1,3 +1,8 @@
+> [!WARNING]
+> **This project is no longer maintained and has been deprecated.**
+>
+> It has been replaced by [**MCPy**](https://github.com/Mateusz-Chwistek/MCPy) — a pure MCP server that lets you add tools by simply dropping Python files into a folder.
+
 # easy-llm-tools #
 
 **Version:** 0.2.0\
